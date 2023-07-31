@@ -1,243 +1,187 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
-import React, { useCallback, useRef, useState } from 'react';
-import { View, StyleSheet, TouchableOpacity, Text, Alert } from 'react-native';
+import React, { useRef, useState } from 'react';
+import { View, TouchableOpacity, Text, StyleSheet, Alert } from 'react-native';
 import { Svg, Path } from 'react-native-svg';
-import ViewShot from 'react-native-view-shot';
-import RNFS from 'react-native-fs';
-import Share from 'react-native-share';
+import { captureRef } from 'react-native-view-shot'; // For exporting the canvas as an image
+import RNFS from 'react-native-fs'; // For saving SVG data to a file
 
-
-interface DrawPoint {
-  x: number;
-  y: number;
+interface Line {
+  id: string;
+  data: string;
+  color: string;
+  thickness: number;
 }
 
+const App: React.FC = () => {
+  const svgRef = useRef<Svg>(null);
+  const [lines, setLines] = useState<Line[]>([]);
+  const [lineStack, setLineStack] = useState<Line[][]>([]);
+  const [undoneLines, setUndoneLines] = useState<Line[][]>([]);
+  const [isEraserMode, setIsEraserMode] = useState(false);
+  const [penColor, setPenColor] = useState('black');
+  const [penType, setPenType] = useState(4); // Default pen thickness
+  const [canvasWidth, setCanvasWidth] = useState(300); // Set your desired canvas width
+  const [canvasHeight, setCanvasHeight] = useState(500); // Set your desired canvas height
 
-const App:React.FC = () => {
- 
-  const [drawingPath, setDrawingPath] = useState<string>('');
-  const [drawingHistory, setDrawingHistory] = useState<string[]>([]);
-  const [eraserHistory, setEraserHistory] = useState<string[]>([]);
-
-  const svgRef = useRef<Svg | null>(null);
-  const viewShotRef = useRef<ViewShot | null>(null);
-
-
-  const [undoHistory, setUndoHistory] = useState<string[]>([]);
-  const [penColor, setPenColor] = useState<string>('#000000');
-  const [penType, setPenType] = useState<'pen' | 'eraser'>('pen');
-  const [eraserActive, setEraserActive] = useState<boolean>(false); // Add eraserActive state
-
-  const handleTouchStart = (e: any) => {
-    if (penType === 'pen' && !eraserActive) {
-      const { locationX, locationY } = e.nativeEvent;
-      setDrawingPath(`M ${locationX} ${locationY}`);
-    }
+  const handleDrawStart = ({ nativeEvent }: any) => {
+    const { locationX, locationY } = nativeEvent;
+    const lineData = `M${locationX} ${locationY}`;
+    const newLine: Line = {
+      id: Date.now().toString(),
+      data: lineData,
+      color: isEraserMode ? 'white' : penColor,
+      thickness: penType,
+    };
+    setLines([...lines, newLine]);
   };
 
-  const handleTouchMove = (e: any) => {
-    if (penType === 'pen' && !eraserActive) {
-      const { locationX, locationY } = e.nativeEvent;
-      setDrawingPath(`${drawingPath} L ${locationX} ${locationY}`);
-    }
+  const handleDrawMove = ({ nativeEvent }: any) => {
+    if (lines.length === 0) return;
+    const { locationX, locationY } = nativeEvent;
+    const lastLine = lines[lines.length - 1];
+    const lineData = `${lastLine.data} L${locationX} ${locationY}`;
+    const updatedLine = { ...lastLine, data: lineData };
+    setLines([...lines.slice(0, -1), updatedLine]);
   };
 
-  const handleTouchEnd = () => {
-    if (penType === 'pen' && !eraserActive) {
-      setDrawingHistory([...drawingHistory, drawingPath]);
-      setDrawingPath('');
+  const handleDrawEnd = () => {
+    if (lines.length > 0) {
+      setLineStack([...lineStack, lines]);
+      setLines([]);
+      setUndoneLines([]); // Clear the undone lines when a new line is drawn
     }
   };
-
 
   const handleUndo = () => {
-     if (drawingHistory.length > 0) {
-      const updatedDrawingHistory = drawingHistory.slice(0, -1);
-      const lastPath = drawingHistory[drawingHistory.length - 1];
-      setDrawingHistory(updatedDrawingHistory);
-      setUndoHistory([...undoHistory, lastPath]);
-      setEraserHistory([...eraserHistory, lastPath]);
-
-    }
-  };
-  
-   const handleRedo = () => {
-     if (undoHistory.length > 0) {
-      const lastUndoPath = undoHistory[undoHistory.length - 1];
-      setUndoHistory(undoHistory.slice(0, -1));
-      setDrawingHistory([...drawingHistory, lastUndoPath]);
-      setEraserHistory(eraserHistory.slice(0, -1));
+    if (lineStack.length > 0) {
+      const lastLine = lineStack[lineStack.length - 1];
+      setLineStack(lineStack.slice(0, -1));
+      setUndoneLines([...undoneLines, lines]); // Store the undone lines
+      setLines(lastLine);
     }
   };
 
-  const handleClearCanvas = () => {
-    setDrawingHistory([]);
-    setDrawingPath('');
-    setEraserHistory([]);
+  const handleRedo = () => {
+    if (undoneLines.length > 0) {
+      const lastUndoneLine = undoneLines[undoneLines.length - 1];
+      setUndoneLines(undoneLines.slice(0, -1));
+      setLineStack([...lineStack, lines]); // Store the current lines in the lineStack
+      setLines(lastUndoneLine);
+    }
+  };
 
+  const handleEraserToggle = () => {
+    setIsEraserMode(!isEraserMode);
   };
 
   const handlePenColorChange = (color: string) => {
     setPenColor(color);
-    setPenType('pen');
-    setEraserActive(false);
+    setIsEraserMode(false);
   };
 
-  const handleEraser = () => {
-    setPenType('eraser');
-     setDrawingPath('')
-     setEraserActive(true); 
+  const handlePenTypeChange = (type: number) => {
+    setPenType(type);
   };
 
-  const handlePen = () => {
-    setPenType('pen');
-    setPenColor('#000000'); 
-     setEraserActive(false); 
-  };
+  const handleExport = async () => {
+    try {
+      if (svgRef.current) {
+        const uri = await captureRef(svgRef.current, {
+          format: 'png',
+          quality: 1,
+        });
 
-  const handleExport = async() => {
-  try {
-       await viewShotRef.current?.capture().then(async (uri) => {
-        const imagePath = RNFS.CachesDirectoryPath + '/drawing.png';
-        await RNFS.copyFile(uri, imagePath);
-        Alert.alert('Success', 'Drawing exported as image!');
-      });
+        // You can now use the URI to share or save the image
+        Alert.alert('Image URI save:', uri)
+        // console.log('Image URI:', uri);
+      }
     } catch (error) {
-      Alert.alert('Error', 'Failed to export drawing as image.');
+      console.error('Error capturing the canvas:', error);
     }
   };
 
-  const handleSave = async() => {
-   try {
-      const svgSnapshot:any = await viewShotRef.current?.capture();
-      // Save the SVG snapshot as a file (for example, in SVG format)
-      const svgPath = RNFS.CachesDirectoryPath + '/drawing.png';
-      await RNFS.writeFile(svgPath, svgSnapshot, 'base64');
-      Alert.alert('Success', 'Drawing saved!');
+   
+  const handleSave = async () => {
+    try {
+      if (svgRef.current) {
+        const uri = await captureRef(svgRef.current, {
+          format: 'png', // Capture the canvas as a PNG image
+          quality: 1,
+        });
+
+        // Get the file path with the .png extension
+        const filePath = RNFS.DocumentDirectoryPath + '/canvas.png';
+
+        // Save the image to the file path
+        await RNFS.copyFile(uri, filePath);
+
+        console.log('Image saved to:', filePath);
+      }
     } catch (error) {
-      Alert.alert('Error', 'Failed to save drawing.');
+      console.error('Error saving the image:', error);
     }
   };
 
-
-
-   const handleShare = async () => {
-     try {
-      await viewShotRef.current?.capture().then(async (uri) => {
-        const imagePath = RNFS.CachesDirectoryPath + '/drawing.png';
-        await RNFS.copyFile(uri, imagePath);
-
-        const shareOptions = {
-          url: 'file://' + imagePath,
-          type: 'image/png',
-          title: 'Handwritten Drawing',
-        };
-
-        Share.open(shareOptions)
-          .then((res) => {
-            console.log('share response', res);
-          })
-          .catch((err) => {
-            err && console.log('share response error', err);
-          });
-      });
-    } catch (error) {
-      Alert.alert('Error', 'Failed to share drawing.');
-    }
-  };
-
-
-  const renderDrawingHistory = () => {
-    return drawingHistory.map((path, index) => (
-      <Path key={index} 
-        d={path} 
-        fill="none" 
-        stroke={penType === 'pen' ? penColor : '#FFFFFF'}
-        strokeWidth="2" />
-    ));
-  };
-
-  const renderEraserHistory = () => {
-    return eraserHistory.map((path, index) => (
-      <Path
-        key={`eraser_${index}`}
-        d={path}
-        fill="none"
-        stroke="#FFFFFF"
-        strokeWidth="10" // Increase the strokeWidth to make the eraser more effective
-      />
-    ));
-  };
-
-  
-
-
+  const handleClear = () =>{
+    setLines([]);
+    setLineStack([]);
+  }
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Hand writing board</Text>
       <View style={styles.canvasContainer}>
-        <ViewShot ref={viewShotRef} options={{ fileName: "Your-File-Name", format: "jpg", quality: 0.9 }}>
-          <Text>Capture </Text>
-        </ViewShot>
-          <Svg
-            ref={(ref) => (svgRef.current = ref)}
-            style={styles.canvas}
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={handleTouchEnd}
-          >
-            {renderEraserHistory()}
-            {renderDrawingHistory()} 
-            <Path
-              d={drawingPath}
-              fill="none"
-              stroke={penType === 'pen' ? penColor : '#FFFFFF'}
-              strokeWidth="2"
-            />
-          </Svg>
-        {/* </ViewShot> */}
+      <Svg
+        ref={svgRef}
+        width={canvasWidth}
+        height={canvasHeight}
+        onTouchStart={handleDrawStart}
+        onTouchMove={handleDrawMove}
+        onTouchEnd={handleDrawEnd}
+        style={styles.canvas}
+      >
+        {lineStack.map((linesArray) =>
+          linesArray.map(({ id, data, color, thickness }) => (
+            <Path key={id} d={data} fill="none" stroke={color} strokeWidth={thickness} />
+          ))
+        )}
+        {lines.map(({ id, data, color, thickness }) => (
+          <Path key={id} d={data} fill="none" stroke={color} strokeWidth={thickness} />
+        ))}
+      </Svg>
       </View>
-      <View style={styles.toolsContainer}>
-        <TouchableOpacity onPress={handleUndo}>
-          <Text>Undo</Text>
+     
+
+      <View style={styles.controlsContainer}>
+        <TouchableOpacity onPress={handleUndo} style={styles.controlButton}>
+          <Text style={styles.controlButtonText}>Undo</Text>
         </TouchableOpacity>
-         <TouchableOpacity onPress={handleRedo}>
-          <Text>Redo</Text>
+
+        <TouchableOpacity onPress={handleRedo} style={styles.controlButton}>
+          <Text style={styles.controlButtonText}>Redo</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={handleClearCanvas}>
-          <Text>Clear</Text>
+
+        <TouchableOpacity onPress={handleEraserToggle} style={styles.controlButton}>
+          <Text style={styles.controlButtonText}>{isEraserMode ? 'Pen' : 'Eraser'}</Text>
         </TouchableOpacity>
-        {eraserActive ? 
-        <TouchableOpacity onPress={handlePen}>
-          <Text>Pen</Text>
-        </TouchableOpacity> : <TouchableOpacity onPress={handleEraser}>
-          <Text>Eraser</Text>
-        </TouchableOpacity>}
-        
-        <View style={styles.penColorContainer}>
-          <TouchableOpacity
-            style={[styles.penColorOption, { backgroundColor: '#000000' }]}
-            onPress={() => handlePenColorChange('#000000')}
-          />
-          <TouchableOpacity
-            style={[styles.penColorOption, { backgroundColor: '#FF0000' }]}
-            onPress={() => handlePenColorChange('#FF0000')}
-          />
-          {/* Add more color options as needed */}
-        </View>
-        <TouchableOpacity onPress={handleExport}>
-          <Text>Export</Text>
+
+        <TouchableOpacity onPress={() => handlePenColorChange('black')} style={[styles.controlButton, styles.blackColorButton]} />
+        <TouchableOpacity onPress={() => handlePenColorChange('red')} style={[styles.controlButton, styles.redColorButton]} />
+        <TouchableOpacity onPress={() => handlePenColorChange('blue')} style={[styles.controlButton, styles.blueColorButton]} />
+        {/* Add more color options as needed */}
+
+        <Text style={styles.text}>Pen Type :</Text>
+        <TouchableOpacity onPress={() => handlePenTypeChange(2)} style={[styles.controlButton, styles.thinPenButton]} />
+        <TouchableOpacity onPress={() => handlePenTypeChange(4)} style={[styles.controlButton, styles.mediumPenButton]} />
+        <TouchableOpacity onPress={() => handlePenTypeChange(6)} style={[styles.controlButton, styles.thickPenButton]} />
+
+        {/* Add more pen type options as needed */}
+        <TouchableOpacity onPress={handleExport} style={styles.controlButton}>
+          <Text style={styles.controlButtonText}>Export</Text>
         </TouchableOpacity>
-        <TouchableOpacity onPress={handleSave}>
-          <Text>Save</Text>
+
+        <TouchableOpacity onPress={handleSave} style={styles.controlButton}>
+          <Text style={styles.controlButtonText}>Save</Text>
         </TouchableOpacity>
-         <TouchableOpacity onPress={handleShare}>
-          <Text>Share</Text>
+        <TouchableOpacity onPress={handleClear} style={styles.controlButton}>
+          <Text style={styles.controlButtonText}>Clear</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -247,41 +191,63 @@ const App:React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#5A5A5A',
-  },
-  title:{
-    fontSize:25, fontWeight:'500',color:"#000000",marginTop:40,alignSelf:"center"
-  },
-  canvasContainer: {
-    flex: 1,
-    alignItems: 'center',
     justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#f3f3f3',
   },
   canvas: {
-    width: '80%',
-    height: '80%',
-    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: 'gray',
   },
-  toolsContainer: {
+  controlsContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderColor: '#CCCCCC',
-    backgroundColor: '#F9F9F9',
+    marginTop: 20,
   },
-  penColorContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  controlButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    margin: 5,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: 'black',
   },
-  penColorOption: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    marginHorizontal: 4,
+  controlButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
   },
+  blackColorButton: {
+    backgroundColor: 'black',
+  },
+  redColorButton: {
+    backgroundColor: 'red',
+  },
+  blueColorButton: {
+    backgroundColor: 'blue',
+  },
+  thinPenButton: {
+    backgroundColor: 'gray',
+    width: 50,
+    height: 30,
+  },
+  mediumPenButton: {
+    backgroundColor: 'gray',
+    width: 70,
+    height: 40,
+  },
+  thickPenButton: {
+    backgroundColor: 'gray',
+    width: 90,
+    height: 50,
+  },
+  canvasContainer: {
+    height:500,
+    backgroundColor:"#ffffff"
+  },
+  text:
+  {fontSize:18, color:'#000000',fontWeight:'500'}
 });
 
 export default App;
